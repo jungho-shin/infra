@@ -1,0 +1,99 @@
+# StarRocks on kind (shared-nothing, FE 2 + BE 4)
+#
+# 사전 조건: StarRocks Operator 설치 (아래 순서 참고)
+#   kubectl apply --server-side -f https://raw.githubusercontent.com/StarRocks/starrocks-kubernetes-operator/main/deploy/starrocks.com_starrocksclusters.yaml
+#   kubectl apply -f https://raw.githubusercontent.com/StarRocks/starrocks-kubernetes-operator/main/deploy/operator.yaml
+#   kubectl -n starrocks get pods   # operator Running 확인
+#
+# 적용:
+#   kubectl apply -f starrocks-kind.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: starrocks
+---
+# FE 설정: BE 4개 기준 기본 replication 3
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: starrocks-fe-cm
+  namespace: starrocks
+data:
+  fe.conf: |
+    LOG_DIR = ${STARROCKS_HOME}/log
+    DATE = "$(date +%Y%m%d-%H%M%S)"
+    JAVA_OPTS="-Dlog4j2.formatMsgNoLookups=true -Xmx2048m -XX:+UseG1GC -Xlog:gc*:${LOG_DIR}/fe.gc.log.$DATE:time"
+    http_port = 8030
+    rpc_port = 9020
+    query_port = 9030
+    edit_log_port = 9010
+    mysql_service_nio_enabled = true
+    sys_log_level = INFO
+    default_replication_num = 3
+---
+# BE 설정: 로컬 환경용 (디스크 여유 체크 완화)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: starrocks-be-cm
+  namespace: starrocks
+data:
+  be.conf: |
+    be_port = 9060
+    webserver_port = 8040
+    heartbeat_service_port = 9050
+    brpc_port = 8060
+    sys_log_level = INFO
+    default_rowset_type = beta
+---
+apiVersion: starrocks.com/v1
+kind: StarRocksCluster
+metadata:
+  name: starrocks
+  namespace: starrocks
+spec:
+  starRocksFeSpec:
+    image: starrocks/fe-ubuntu:4.0.4
+    replicas: 2
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+    configMapInfo:
+      configMapName: starrocks-fe-cm
+      resolveKey: fe.conf
+    service:
+      type: ClusterIP
+    storageVolumes:
+      - name: fe-meta
+        storageClassName: standard      # kind 기본 StorageClass
+        storageSize: 10Gi
+        mountPath: /opt/starrocks/fe/meta
+      - name: fe-log
+        storageClassName: standard
+        storageSize: 5Gi
+        mountPath: /opt/starrocks/fe/log
+  starRocksBeSpec:
+    image: starrocks/be-ubuntu:4.0.4
+    replicas: 4
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+    configMapInfo:
+      configMapName: starrocks-be-cm
+      resolveKey: be.conf
+    storageVolumes:
+      - name: be-data
+        storageClassName: standard
+        storageSize: 20Gi
+        mountPath: /opt/starrocks/be/storage
+      - name: be-log
+        storageClassName: standard
+        storageSize: 5Gi
+        mountPath: /opt/starrocks/be/log

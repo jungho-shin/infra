@@ -1,0 +1,164 @@
+# ---------------------------------------------------------------------------
+# JCasC(Configuration as Code) + 플러그인 목록.
+# 설치 마법사를 건너뛰고 이 설정으로 Jenkins 를 기동한다.
+# 이 ConfigMap 을 수정한 뒤에는 컨트롤러를 재시작하거나
+# "Manage Jenkins > Configuration as Code > Reload existing configuration" 을 실행한다.
+# ---------------------------------------------------------------------------
+#
+# `jenkins-secrets` Secret 은 이 파일에 두지 않는다. GitLab root 비밀번호(2.2)·
+# Argo CD 시크릿(4.2) 과 같은 이유다 — 이 리포지토리는 공개이고
+# 매니페스트에 값을 적으면 git 기록에 영구히 남는다.
+#
+# README 5.2 의 `kubectl create secret` 으로 먼저 만든다. 키 7개:
+#   JENKINS_ADMIN_ID        관리자 계정 (예: admin)
+#   JENKINS_ADMIN_PASSWORD  관리자 비밀번호
+#   GITOPS_USER             GitLab Group access token 의 *이름* (ci-bot) — git 인증 사용자명
+#   GITOPS_TOKEN            그 토큰 값 (read_repository + write_repository, Maintainer)
+#                           앱 리포지토리 체크아웃과 gitops push 를 둘 다 한다 (README 2.4)
+#   ARGOCD_AUTH_TOKEN       argocd account generate-token --account cicd
+#   NEXUS_USER              Nexus docker-hosted push 계정
+#   NEXUS_PASSWORD          그 비밀번호
+#
+# 아래 JCasC 의 ${JENKINS_ADMIN_PASSWORD} 등이 이 Secret 값으로 치환된다
+# (jenkins.yaml 의 envFrom.secretRef).
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-plugins
+  namespace: jenkins
+data:
+  # 버전을 적지 않으면 해당 Jenkins 버전과 호환되는 최신 플러그인을 받는다.
+  # 재현 가능한 설치가 필요하면 `plugin:version` 형태로 고정한다.
+  plugins.txt: |
+    configuration-as-code
+    kubernetes
+    workflow-aggregator
+    pipeline-stage-view
+    git
+    gitlab-branch-source
+    credentials-binding
+    pipeline-utility-steps
+    job-dsl
+    timestamper
+    build-timeout
+    ws-cleanup
+    antisamy-markup-formatter
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-casc
+  namespace: jenkins
+data:
+  jenkins.yaml: |
+    jenkins:
+      systemMessage: "GitOps CI - 빌드/이미지 푸시 후 gitops 리포지토리를 갱신한다"
+      # 컨트롤러에서는 빌드를 돌리지 않고 kubernetes 에이전트만 사용한다
+      numExecutors: 0
+      mode: EXCLUSIVE
+      slaveAgentPort: 50000
+      securityRealm:
+        local:
+          allowsSignup: false
+          users:
+            - id: "${JENKINS_ADMIN_ID}"
+              password: "${JENKINS_ADMIN_PASSWORD}"
+      authorizationStrategy:
+        loggedInUsersCanDoAnything:
+          allowAnonymousRead: false
+      clouds:
+        - kubernetes:
+            name: "kubernetes"
+            serverUrl: "https://kubernetes.default.svc"
+            namespace: "jenkins"
+            # 에이전트가 컨트롤러로 되돌아올 때 쓰는 주소 (클러스터 내부)
+            jenkinsUrl: "http://jenkins.jenkins.svc.cluster.local:8080"
+            jenkinsTunnel: "jenkins-agent.jenkins.svc.cluster.local:50000"
+            containerCapStr: "10"
+            templates:
+              # Jenkinsfile 에서 agent { label 'build' } 로 사용한다.
+              - name: "build"
+                namespace: "jenkins"
+                label: "build"
+                serviceAccount: "jenkins-agent"
+                containers:
+                  # 도커 데몬 없이 이미지를 빌드/푸시한다(DinD 특권 컨테이너 불필요)
+                  - name: "kaniko"
+                    # Nexus gcr-proxy 경유. README 3.3 에서 프록시를 먼저 만든다
+                    image: "nexus-docker-group.example.com/kaniko-project/executor:v1.23.2-debug"
+                    command: "/busybox/cat"
+                    ttyEnabled: true
+                  # kubectl / kustomize / git / helm 포함
+                  - name: "tools"
+                    image: "nexus-docker-group.example.com/alpine/k8s:1.30.2"
+                    command: "cat"
+                    ttyEnabled: true
+                  # npm ci / npm test / npm run build
+                  - name: "node"
+                    image: "nexus-docker-group.example.com/library/node:22-alpine"
+                    command: "cat"
+                    ttyEnabled: true
+                  # python-api 의 pytest. 이미지 안 python 버전과 맞춘다(samples/python-api/Dockerfile)
+                  - name: "python"
+                    image: "nexus-docker-group.example.com/library/python:3.12-slim"
+                    command: "cat"
+                    ttyEnabled: true
+                  # argocd CLI. 서버(bootstrap/argocd/kustomization.yaml)와 같은 태그.
+                  # 공식 이미지는 quay.io 에 있다 → Nexus quay-proxy 경유
+                  - name: "argocd"
+                    image: "nexus-docker-group.example.com/argoproj/argocd:v3.5.2"
+                    command: "cat"
+                    ttyEnabled: true
+                    # 이 이미지만 비특권 사용자(uid 999)로 돈다. 워크스페이스는 jnlp(uid 1000)가
+                    # 만들기 때문에 999 는 `@tmp/durable-*` 에 결과 파일을 쓰지 못하고,
+                    # sh 스텝이 "process apparently never started" 로 5분 뒤 실패한다
+                    # (2026-09-24 develop #1). 다른 세 컨테이너처럼 root 로 맞춘다.
+                    runAsUser: "0"
+                    runAsGroup: "0"
+                # kaniko 의 /kaniko/.docker/config.json 은 Jenkinsfile 이
+                # `nexus-registry` 자격증명으로 직접 만든다. docker-registry 타입
+                # Secret 을 secretVolume 으로 붙이면 파일 이름이 `.dockerconfigjson`
+                # 이 되어 kaniko 가 찾지 못한다.
+
+    credentials:
+      system:
+        domainCredentials:
+          - credentials:
+              - usernamePassword:
+                  scope: GLOBAL
+                  id: "gitops-repo"
+                  description: "gitops 매니페스트 리포지토리 push 용"
+                  username: "${GITOPS_USER}"
+                  password: "${GITOPS_TOKEN}"
+              - string:
+                  scope: GLOBAL
+                  id: "argocd-auth-token"
+                  description: "argocd app sync 용 API 토큰"
+                  secret: "${ARGOCD_AUTH_TOKEN}"
+              - usernamePassword:
+                  scope: GLOBAL
+                  id: "nexus-registry"
+                  description: "Nexus docker-hosted push 용 (kaniko)"
+                  username: "${NEXUS_USER}"
+                  password: "${NEXUS_PASSWORD}"
+
+    unclassified:
+      location:
+        url: "http://jenkins.example.com/"
+        adminAddress: "ci@example.com"
+
+    # 파이프라인 잡을 코드로 관리하려면 job-dsl 을 사용한다.
+    # 앱 리포지토리 루트의 Jenkinsfile 을 브랜치별로 자동 인식한다.
+    # jobs:
+    #   - script: >
+    #       multibranchPipelineJob('react-app') {
+    #         branchSources {
+    #           git {
+    #             id('react-app')
+    #             remote('http://gitlab.gitlab.svc.cluster.local/my-group/react-app.git')
+    #             credentialsId('gitops-repo')
+    #           }
+    #         }
+    #         orphanedItemStrategy { discardOldItems { numToKeep(10) } }
+    #       }

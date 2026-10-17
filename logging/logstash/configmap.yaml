@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: elk-stack
+data:
+  logstash.yml: |
+    http.host: "0.0.0.0"
+    xpack.monitoring.enabled: false
+  pipeline.conf: |
+    input {
+      beats {
+        port => 5044
+      }
+    }
+    
+    filter {
+      if [fields][log_type] == "application" {
+        grok {
+          match => { "message" => "%{TIMESTAMP_ISO8601:timestamp} %{LOGLEVEL:level} %{GREEDYDATA:message}" }
+        }
+      }
+      
+      date {
+        match => [ "timestamp", "ISO8601" ]
+      }
+    }
+    
+    output {
+      file {
+        path => "/usr/share/logstash/output/logstash-%{+YYYY.MM.dd}.log"
+        codec => json_lines
+      }
+    }
+

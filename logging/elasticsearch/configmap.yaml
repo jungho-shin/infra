@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  namespace: elk-stack
+data:
+  elasticsearch.yml: |
+    cluster.name: elk-cluster
+    node.name: ${HOSTNAME}
+    network.host: 0.0.0.0
+    discovery.seed_hosts: ["elasticsearch"]
+    cluster.initial_master_nodes: ["elasticsearch-0"]
+    path.data: /usr/share/elasticsearch/data
+    path.logs: /usr/share/elasticsearch/logs
+    http.cors.enabled: true
+    http.cors.allow-origin: "*"
+

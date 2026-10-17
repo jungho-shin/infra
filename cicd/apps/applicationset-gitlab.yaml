@@ -1,0 +1,57 @@
+# GitLab 그룹의 리포지토리를 스캔해서 Application 을 자동 생성한다.
+# 각 리포지토리 루트에 .argocd.yaml 이 있는 경우에만 대상이 된다.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: gitlab-group-apps
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - scmProvider:
+        gitlab:
+          group: my-group
+          # Argo CD 가 /api/v4 를 붙인다. 클러스터 안에서는 CoreDNS rewrite(README 1.6)로 풀린다.
+          api: http://gitlab.example.com/
+          includeSubgroups: true
+          tokenRef:
+            secretName: gitlab-scm-credentials
+            key: token
+        filters:
+          - repositoryMatch: '^svc-.*'
+            pathsExist: [.argocd.yaml, manifests]
+        # 생성되는 repoURL 은 GitLab 의 external_url(http://gitlab.example.com)을 그대로 따른다.
+        # CoreDNS rewrite(README 1.6)가 있으므로 Argo CD Pod 에서도 풀린다.
+        # https 는 "HTTP 계열 clone URL" 이라는 뜻이고, 실제 스킴은 external_url 을 따른다.
+        cloneProtocol: https
+  template:
+    metadata:
+      name: '{{ .repository }}-dev'
+      annotations:
+        repo: '{{ .repository }}'
+    spec:
+      project: dev
+      source:
+        repoURL: '{{ .url }}'
+        targetRevision: '{{ .branch }}'
+        path: manifests/overlays/dev
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{ .repository }}-dev'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-scm-credentials
+  namespace: argocd
+type: Opaque
+stringData:
+  # Group access token (read_api, read_repository)
+  token: __REPLACE_ME__

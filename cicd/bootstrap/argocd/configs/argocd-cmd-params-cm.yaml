@@ -1,0 +1,18 @@
+# NOTE: patch 대상 매칭용 파일이므로 metadata.namespace 를 지정하지 않는다.
+# upstream install.yaml 의 리소스에는 namespace 가 없고, kustomization 의
+# `namespace: argocd` 트랜스포머는 patch 적용 이후에 실행되기 때문이다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+  labels:
+    app.kubernetes.io/name: argocd-cmd-params-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  server.insecure: "true"
+  # 리포지토리 폴링 주기 (webhook 을 쓰면 길게 잡아도 된다)
+  timeout.reconciliation: 180s
+  # 동시 처리량 튜닝
+  controller.status.processors: "20"
+  controller.operation.processors: "10"
+  reposerver.parallelism.limit: "10"

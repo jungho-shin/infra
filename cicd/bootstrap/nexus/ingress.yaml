@@ -1,0 +1,75 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nexus
+  namespace: nexus
+  annotations:
+    # 아티팩트(jar, 이미지 레이어) 업로드를 위해 크기 제한 해제
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: nexus.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexus
+                port:
+                  name: http
+---
+# ---------------------------------------------------------------------------
+# Docker 레지스트리는 경로가 아니라 호스트 단위로만 동작한다(/v2/ 가 루트여야 함).
+# 그래서 UI 와는 별도의 호스트를 쓴다.
+#
+#   nexus-docker.example.com        → docker-hosted (8082), push/pull
+#   nexus-docker-group.example.com  → docker-group  (8083), pull 전용
+#
+# 평문(HTTP)이므로 접속하는 주체마다 예외가 필요하다. kind 에서는 셋 다 이미
+# 해결돼 있고, 노드에 daemon.json/hosts.toml 을 넣을 필요가 없다:
+#
+#   노드 containerd(pull)  kind-config.yaml 의 containerdConfigPatches
+#                          → nexus-docker.example.com 을 localhost:30082 로
+#   kaniko(push)           CoreDNS rewrite(bootstrap/coredns/) + kaniko --insecure
+#   WSL/Windows docker     localhost:30082 (Docker 가 localhost 를 insecure 취급)
+#
+# 일반 클러스터(호스트가 곧 노드)라면 각 노드의 /etc/docker/daemon.json 에
+# insecure-registries 를 넣거나 containerd hosts.toml 에 skip_verify 를 설정한다.
+# 자세한 내용은 README 3.4.
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nexus-docker
+  namespace: nexus
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: nexus-docker.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexus
+                port:
+                  name: docker-hosted
+    - host: nexus-docker-group.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexus
+                port:
+                  name: docker-group

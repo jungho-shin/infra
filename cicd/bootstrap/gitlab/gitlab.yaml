@@ -1,0 +1,188 @@
+# root 초기 비밀번호 Secret(gitlab-secrets, 키 GITLAB_ROOT_PASSWORD)은 이 파일에 두지 않는다.
+# 이 리포지토리는 공개라 파일에 적으면 비밀번호가 그대로 노출된다(실제로 그랬다).
+# README 2.2 처럼 적용 전에 kubectl create secret 으로 만든다. 없으면 GitLab Pod 가
+# CreateContainerConfigError 로 멈춘다.
+#
+# 이 값은 최초 기동(DB 시딩) 때만 쓰인다. GitLab 은 8자 이상 + 취약 비밀번호 사전 검사를 하고,
+# 거부되면 시드(003_admin.rb)가 실패해 reconfigure 가 Infra Phase failed → exit 1 로 죽는다.
+# 로그 끝에 `Password must not contain commonly used combinations` 가 보이면 이 경우다.
+# 실패 후 복구(db:seed_fu)는 README 2.2 참고.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitlab-config
+  namespace: gitlab
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual        # 기본 StorageClass 를 쓰려면 이 줄 삭제
+  volumeName: gitlab-config-pv    # 기본 StorageClass 를 쓰려면 이 줄도 삭제
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitlab-data
+  namespace: gitlab
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual        # 기본 StorageClass 를 쓰려면 이 줄 삭제
+  volumeName: gitlab-data-pv      # 기본 StorageClass 를 쓰려면 이 줄도 삭제
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab
+  namespace: gitlab
+spec:
+  type: ClusterIP
+  selector:
+    app: gitlab
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    # git+ssh. 외부에서 쓰려면 NodePort(30022) 또는 LoadBalancer 가 필요하다.
+    - name: ssh
+      port: 22
+      targetPort: 22
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gitlab
+  namespace: gitlab
+spec:
+  serviceName: gitlab
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab
+  template:
+    metadata:
+      labels:
+        app: gitlab
+    spec:
+      # omnibus 는 컨테이너 안에서 PostgreSQL/Redis/Gitaly/nginx 를 직접 기동하며
+      # 각 프로세스의 UID 를 스스로 맞춘다. root 로 떠야 한다.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: gitlab
+          # 운영에서는 구체적인 태그로 고정할 것. 태그 목록:
+          #   https://hub.docker.com/r/gitlab/gitlab-ce/tags
+          image: gitlab/gitlab-ce:17.11.1-ce.0
+          ports:
+            - name: http
+              containerPort: 80
+            - name: ssh
+              containerPort: 22
+          envFrom:
+            # GITLAB_OMNIBUS_CONFIG 안의 ENV['GITLAB_ROOT_PASSWORD'] 가 이 값으로 치환된다
+            - secretRef:
+                name: gitlab-secrets
+          env:
+            # gitlab.rb 에 들어갈 내용을 그대로 쓴다. 컨테이너 진입점이 이 값을
+            # /etc/gitlab/gitlab.rb 로 옮긴 뒤 루비 코드로 평가한다.
+            # 이 값이 바뀌면 컨테이너 재시작 시 reconfigure 가 다시 돈다.
+            #
+            # 주석까지 루비 소스로 평가되고, 컨테이너 로케일에 따라 비ASCII 문자가
+            # "invalid multibyte char" 를 낼 수 있다. 그래서 블록 안은 영문만 쓰고
+            # 설명은 여기에 둔다.
+            #
+            #   initial_root_password   최초 기동(DB 시딩) 때만 반영된다. 지정하지
+            #                           않으면 임의 생성되어 /etc/gitlab/
+            #                           initial_root_password 에 24시간만 남는다.
+            #   gitlab_shell_ssh_port   사용자에게 안내되는 clone ssh 주소의 포트.
+            #                           NodePort 로 노출하므로 30022 로 맞춘다.
+            #   nginx[...]              Ingress(nginx) 뒤에 둘 때의 리버스 프록시 설정.
+            #   puma / sidekiq /        메모리 절감. 이 값들이 없으면 소규모
+            #   prometheus_monitoring   클러스터에서 6Gi 를 넘기기 쉽다.
+            #   registry                컨테이너 레지스트리는 Nexus(bootstrap/nexus/)를 쓴다.
+            #   monitoring_whitelist    /-/health 같은 헬스체크 엔드포인트를 부를 수 있는 출발지 IP.
+            #                           기본값은 127.0.0.0/8 뿐이고, 목록 밖에서 오면 403 이
+            #                           아니라 404 를 돌려준다. kubelet 프로브는 노드 IP 에서
+            #                           오므로, 빼면 startupProbe 가 멀쩡한 GitLab 을 계속 죽인다.
+            - name: GITLAB_OMNIBUS_CONFIG
+              value: |
+                external_url 'http://gitlab.example.com'
+
+                gitlab_rails['initial_root_password'] = ENV['GITLAB_ROOT_PASSWORD']
+                gitlab_rails['gitlab_shell_ssh_port'] = 30022
+
+                nginx['listen_port'] = 80
+                nginx['listen_https'] = false
+                nginx['proxy_set_headers'] = {
+                  "X-Forwarded-Proto" => "http",
+                  "X-Forwarded-Ssl" => "off"
+                }
+
+                puma['worker_processes'] = 2
+                sidekiq['max_concurrency'] = 9
+                prometheus_monitoring['enable'] = false
+                gitlab_rails['env'] = { 'MALLOC_ARENA_MAX' => '2' }
+
+                registry['enable'] = false
+
+                gitlab_rails['monitoring_whitelist'] = [
+                  '127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'
+                ]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 6Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/gitlab
+            - name: data
+              mountPath: /var/opt/gitlab
+            - name: logs
+              mountPath: /var/log/gitlab
+            - name: shm
+              mountPath: /dev/shm
+          # 최초 기동은 reconfigure + DB 마이그레이션으로 8~15분 걸린다.
+          # 15s * 80 = 20분까지 기다린다.
+          startupProbe:
+            httpGet:
+              path: /-/health
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 80
+          readinessProbe:
+            httpGet:
+              path: /-/health
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: gitlab-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitlab-data
+        # 로그는 omnibus 의 logrotate 가 관리한다. 재시작 시 사라져도 무방하므로
+        # PV 를 따로 잡지 않는다. 보존이 필요하면 PVC 로 바꾼다.
+        - name: logs
+          emptyDir: {}
+        # 번들된 PostgreSQL 이 사용한다. 기본 64Mi 로는 부족하다.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

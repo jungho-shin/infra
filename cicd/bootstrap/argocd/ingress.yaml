@@ -1,0 +1,48 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+  annotations:
+    # 평문(HTTP) 전제. cert-manager 가 없어 TLS 시크릿이 생기지 않으므로 tls: 블록과
+    # ssl-redirect 를 두지 않는다(두면 리다이렉트만 돈다). argocd-server 도
+    # argocd-cmd-params-cm 의 server.insecure: "true" 로 평문을 받는다.
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: argocd.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  name: http
+---
+# native gRPC 용 호스트. 클라이언트→nginx 구간이 HTTP/2 여야 쓸모가 있어 TLS 가 전제다.
+# 평문 구성(현재)에서는 쓰지 않는다. CLI 와 CI 는 위 argocd.example.com:80 에
+# --grpc-web --plaintext 로 붙는다(README 4.3). TLS 를 붙일 때를 위해 남겨 둔다.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server-grpc
+  namespace: argocd
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: GRPC
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: grpc.argocd.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  name: https

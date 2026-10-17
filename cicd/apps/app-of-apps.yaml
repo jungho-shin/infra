@@ -1,0 +1,30 @@
+# 이 Application 하나만 등록하면 apps/ 디렉터리의 모든 Application 이 따라 들어온다.
+# kubectl apply -f apps/app-of-apps.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bootstrap
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: http://gitlab.example.com/my-group/gitops-manifests.git
+    targetRevision: main
+    path: apps
+    directory:
+      recurse: true
+      # applicationset-gitlab.yaml 은 기본 제외. placeholder 토큰 Secret 이 함께 들어 있어
+      # 포함하면 selfHeal 이 kubectl 로 넣은 실제 토큰을 계속 __REPLACE_ME__ 로 되돌린다.
+      # 그룹 스캔(README 2.4 의 선택 항목)을 쓸 때 Secret 을 파일에서 빼고 이 목록에서 지운다.
+      exclude: '{app-of-apps.yaml,applicationset-gitlab.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

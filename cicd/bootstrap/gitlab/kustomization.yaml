@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gitlab
+
+resources:
+  - namespace.yaml
+  - local-pv.yaml       # 동적 프로비저너가 있으면 이 줄 삭제
+  - gitlab.yaml
+  - ingress.yaml
+  # git+ssh(ssh://git@localhost:30022) 를 쓰려면 주석 해제. UI 는 Ingress 로
+  # 접속하므로 HTTP(30080)용으로는 필요 없다 — kind 에서는 30080 매핑이 없어
+  # 주석을 풀어도 노드 컨테이너 안에서만 열린다. README 2.3 참고.
+  # - nodeport.yaml

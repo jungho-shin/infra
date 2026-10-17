@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: react-app-prod
+namePrefix: prod-
+
+resources:
+  - ../../base
+  - ingress.yaml
+  - hpa.yaml
+  - pdb.yaml
+
+replicas:
+  - name: react-app
+    count: 3
+
+images:
+  - name: nexus-docker.example.com/my-group/react-app
+    newTag: v0.1.0
+
+patches:
+  - target:
+      kind: Deployment
+      name: react-app
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: prod
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 500m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "2"

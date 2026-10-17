@@ -1,0 +1,51 @@
+# NOTE: patch 대상 매칭용 파일이므로 metadata.namespace 를 지정하지 않는다.
+# upstream install.yaml 의 리소스에는 namespace 가 없고, kustomization 의
+# `namespace: argocd` 트랜스포머는 patch 적용 이후에 실행되기 때문이다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+data:
+  # GitLab 커밋에 배포 상태(commit status) 를 되돌려 기록한다.
+  # 클러스터 안에서도 gitlab.example.com 을 쓴다(CoreDNS rewrite, README 1.6).
+  service.webhook.gitlab: |
+    url: http://gitlab.example.com/api/v4
+    headers:
+      - name: PRIVATE-TOKEN
+        value: $gitlab-token
+      - name: Content-Type
+        value: application/json
+
+  # path 의 프로젝트 경로는 URL 인코딩해야 한다(my-group/repo → my-group%2Frepo).
+  template.app-deployed: |
+    webhook:
+      gitlab:
+        method: POST
+        path: /projects/my-group%2F{{.app.metadata.annotations.repo}}/statuses/{{.app.status.operationState.syncResult.revision}}
+        body: |
+          {
+            "state": "success",
+            "name": "argocd/{{.app.metadata.name}}",
+            "target_url": "http://argocd.example.com/applications/{{.app.metadata.name}}",
+            "description": "Synced to {{.app.status.sync.revision}}"
+          }
+
+  template.app-sync-failed: |
+    webhook:
+      gitlab:
+        method: POST
+        path: /projects/my-group%2F{{.app.metadata.annotations.repo}}/statuses/{{.app.status.operationState.syncResult.revision}}
+        body: |
+          {
+            "state": "failed",
+            "name": "argocd/{{.app.metadata.name}}",
+            "target_url": "http://argocd.example.com/applications/{{.app.metadata.name}}",
+            "description": "Sync failed"
+          }
+
+  trigger.on-deployed: |
+    - when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+      send: [app-deployed]
+  trigger.on-sync-failed: |
+    - when: app.status.operationState.phase in ['Error', 'Failed']
+      send: [app-sync-failed]
