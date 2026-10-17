@@ -111,6 +111,13 @@ nodes:
       - containerPort: 30083
         hostPort: 30083
         protocol: TCP
+      # StarRocks FE query_port (MySQL 프로토콜). DBeaver 등에서 127.0.0.1:9030 으로 접속.
+      # starrocks-kind.yaml 의 FE service 가 nodePort: 30030 이어야 한다.
+      # Stream Load(8030/8040) 는 BE 내부 주소로 redirect 되어 호스트에서 쓸 수 없으므로
+      # 일부러 열지 않는다.
+      - containerPort: 30030
+        hostPort: 9030
+        protocol: TCP
     # control-plane 에는 /data 를 마운트하지 않는다. ingress-nginx 만 뜨고
     # hostPath PV 를 쓰는 워크로드는 아래 스토리지 워커로 고정되기 때문이다.
 

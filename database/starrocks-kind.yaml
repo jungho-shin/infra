@@ -5,6 +5,10 @@
 #   kubectl apply -f https://raw.githubusercontent.com/StarRocks/starrocks-kubernetes-operator/main/deploy/operator.yaml
 #   kubectl -n starrocks get pods   # operator Running 확인
 #
+# 외부 접속 (DBeaver 등):
+#   kind-config.yaml 의 extraPortMappings (containerPort 30030 -> hostPort 9030) 가
+#   적용된 클러스터여야 한다. 접속 주소는 127.0.0.1:9030 (root, 비밀번호 없음).
+#
 # 적용:
 #   kubectl apply -f starrocks-kind.yaml
 ---
@@ -66,7 +70,12 @@ spec:
       configMapName: starrocks-fe-cm
       resolveKey: fe.conf
     service:
-      type: ClusterIP
+      type: NodePort
+      ports:
+        - name: query            # 포트 이름은 반드시 query
+          port: 9030
+          containerPort: 9030
+          nodePort: 30030        # kind-config.yaml 의 containerPort 와 동일해야 함
     storageVolumes:
       - name: fe-meta
         storageClassName: standard      # kind 기본 StorageClass
